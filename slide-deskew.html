@@ -29,6 +29,12 @@
   @keyframes sp{ to{ transform:rotate(360deg); } }
   .stage{ position:relative; width:100%; background:#000; border-radius:14px; overflow:hidden; }
   video, .stage canvas, .stage img{ display:block; width:100%; height:auto; }
+  #video{ transform-origin:center center; }
+  .zoombar{ position:absolute; left:0; right:0; bottom:104px; display:flex; align-items:center; gap:8px; padding:0 14px; }
+  .zoombar input[type=range]{ flex:1; height:26px; accent-color:#fff; }
+  .zbtn{ background:rgba(0,0,0,.55); color:#fff; border:none; border-radius:16px; padding:6px 9px; font-size:13px; cursor:pointer; }
+  .zbtn.on{ background:#fff; color:#000; font-weight:700; }
+  #zoomval{ background:rgba(0,0,0,.55); color:#fff; border-radius:12px; padding:5px 7px; font-size:12px; min-width:42px; text-align:center; }
   #shutter{ position:absolute; left:50%; bottom:16px; transform:translateX(-50%);
     width:72px; height:72px; border-radius:50%; background:#fff; border:5px solid rgba(255,255,255,.4);
     cursor:pointer; }
@@ -66,15 +72,22 @@
 
   <!-- 相機 -->
   <div id="camera" class="hidden">
-    <div class="stage">
+    <div class="stage" id="camStage">
       <video id="video" playsinline muted></video>
       <div class="camtop">
         <button class="chip" id="btnSwitch">切換鏡頭</button>
         <button class="chip" id="btnCamClose">取消</button>
       </div>
+      <div class="zoombar">
+        <button class="zbtn" data-z="1">1×</button>
+        <button class="zbtn" data-z="2">2×</button>
+        <button class="zbtn" data-z="3">3×</button>
+        <input id="zoom" type="range" min="1" max="6" step="0.1" value="1">
+        <span id="zoomval">1.0×</span>
+      </div>
       <div id="shutter"></div>
     </div>
-    <p class="tip center" style="margin-top:12px">讓整張投影片都在畫面內，按白色圓鈕拍照</p>
+    <p class="tip center" style="margin-top:12px">用滑桿或雙指拉近，讓投影片盡量放大填滿畫面，再按白色圓鈕。手機可橫拿。</p>
   </div>
 
   <!-- 結果 -->
@@ -118,6 +131,7 @@
 <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onCvReady()" onerror="onCvError()"></script>
 <script>
 let cvReady=false, stream=null, facing='environment';
+let vTrack=null, nativeZoom=false, digitalZoom=1;   // 變焦狀態
 let srcImg=new Image();               // 目前載入的原圖
 let detectedQuad=null;                 // 偵測到的四角（原圖座標）TL,TR,BR,BL
 let handles=null, dragIdx=-1;          // 手動微調用
@@ -155,16 +169,53 @@ async function startCamera(){
   try{
     stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:facing}, width:{ideal:3840}, height:{ideal:2160} }, audio:false });
     $('video').srcObject=stream; await $('video').play();
+    vTrack=stream.getVideoTracks()[0];
+    setupZoom();
     show('camera');
   }catch(e){ $('capInput').click(); }
 }
 function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
+
+/* 變焦：優先用硬體變焦(畫質好)，不支援則用數位變焦(裁切放大) */
+function setupZoom(){
+  const zi=$('zoom'); digitalZoom=1; nativeZoom=false;
+  $('video').style.transform='scale(1)';
+  let caps={}; try{ caps=vTrack.getCapabilities?vTrack.getCapabilities():{}; }catch(e){}
+  if(caps && caps.zoom){
+    nativeZoom=true;
+    zi.min=caps.zoom.min||1; zi.max=caps.zoom.max||6; zi.step=caps.zoom.step||0.1; zi.value=caps.zoom.min||1;
+  }else{
+    zi.min=1; zi.max=6; zi.step=0.1; zi.value=1;
+  }
+  $('zoomval').textContent=parseFloat(zi.value).toFixed(1)+'×';
+  setZoomActiveBtn(parseFloat(zi.value));
+}
+function applyZoom(z){
+  z=Math.max(parseFloat($('zoom').min), Math.min(parseFloat($('zoom').max), z));
+  $('zoom').value=z; $('zoomval').textContent=z.toFixed(1)+'×'; setZoomActiveBtn(z);
+  if(nativeZoom){ try{ vTrack.applyConstraints({advanced:[{zoom:z}]}); }catch(e){} }
+  else{ digitalZoom=z; $('video').style.transform='scale('+z+')'; }
+}
+function setZoomActiveBtn(z){ document.querySelectorAll('.zbtn').forEach(b=>b.classList.toggle('on', Math.abs(parseFloat(b.dataset.z)-z)<0.05)); }
+$('zoom').oninput=e=>applyZoom(parseFloat(e.target.value));
+document.querySelectorAll('.zbtn').forEach(b=>b.onclick=()=>applyZoom(parseFloat(b.dataset.z)));
+// 雙指縮放
+let pinch=null; const tdist=e=>Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+const camStage=$('camStage');
+camStage.addEventListener('touchstart',e=>{ if(e.touches.length===2){ pinch={d:tdist(e), z:parseFloat($('zoom').value)}; } },{passive:false});
+camStage.addEventListener('touchmove',e=>{ if(e.touches.length===2 && pinch){ e.preventDefault(); applyZoom(pinch.z*(tdist(e)/pinch.d)); } },{passive:false});
+camStage.addEventListener('touchend',e=>{ if(e.touches.length<2) pinch=null; });
 $('btnCamClose').onclick=()=>{ stopCamera(); show('home'); };
 $('btnSwitch').onclick=async()=>{ facing = facing==='environment'?'user':'environment'; stopCamera(); await startCamera(); };
 $('shutter').onclick=()=>{
   const v=$('video');
-  const c=document.createElement('canvas'); c.width=v.videoWidth; c.height=v.videoHeight;
-  c.getContext('2d').drawImage(v,0,0);
+  let sx=0,sy=0,cw=v.videoWidth,ch=v.videoHeight;
+  if(!nativeZoom && digitalZoom>1){          // 數位變焦：擷取中央放大區域
+    cw=v.videoWidth/digitalZoom; ch=v.videoHeight/digitalZoom;
+    sx=(v.videoWidth-cw)/2; sy=(v.videoHeight-ch)/2;
+  }
+  const c=document.createElement('canvas'); c.width=Math.round(cw); c.height=Math.round(ch);
+  c.getContext('2d').drawImage(v, sx,sy,cw,ch, 0,0, c.width,c.height);
   stopCamera();
   srcImg=new Image();
   srcImg.onload=autoProcess;
