@@ -32,7 +32,12 @@
   /* 相機改為全螢幕覆蓋，控制列永遠可見 */
   #camera{ position:fixed; inset:0; z-index:40; background:#000; display:flex; flex-direction:column; }
   #camStage{ position:relative; flex:1; min-height:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-  #video{ max-width:100%; max-height:100%; width:auto; height:auto; transform-origin:center center; }
+  #video{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); max-width:100%; max-height:100%; z-index:0; }
+  #camCanvas{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:1; }
+  #liveOverlay{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:2; pointer-events:none; }
+  .lockpill{ position:absolute; top:calc(10px + env(safe-area-inset-top)); left:calc(10px + env(safe-area-inset-left)); z-index:3;
+    background:rgba(0,0,0,.55); color:#fff; border-radius:20px; padding:7px 12px; font-size:13px; }
+  .lockpill.on{ background:rgba(58,210,159,.92); color:#08251b; font-weight:700; }
   .cambottom{ position:absolute; left:0; right:0; bottom:0; z-index:2; display:flex; flex-direction:column; align-items:center; gap:12px;
     padding:12px 14px calc(14px + env(safe-area-inset-bottom)); background:linear-gradient(to top, rgba(0,0,0,.6), rgba(0,0,0,0)); }
   .zoombar{ display:flex; align-items:center; gap:8px; width:100%; max-width:520px; }
@@ -78,6 +83,9 @@
   <div id="camera" class="hidden">
     <div id="camStage">
       <video id="video" playsinline muted></video>
+      <canvas id="camCanvas"></canvas>
+      <canvas id="liveOverlay"></canvas>
+      <div class="lockpill" id="lockpill">尋找投影片中…</div>
     </div>
     <div class="camtop">
       <button class="chip" id="btnSwitch">切換鏡頭</button>
@@ -178,14 +186,67 @@ async function startCamera(){
     vTrack=stream.getVideoTracks()[0];
     setupZoom();
     show('camera');
+    startLive();
   }catch(e){ $('capInput').click(); }
 }
-function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
+function stopCamera(){ stopLive(); if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
+
+/* 即時預覽：把相機畫面畫到 canvas，並即時偵測、疊出綠色四角框 */
+let liveRAF=null, lastDetect=0, liveQuad=null;
+function startLive(){
+  const v=$('video'), cc=$('camCanvas'), ov=$('liveOverlay'), stage=$('camStage');
+  liveQuad=null;
+  function loop(){
+    liveRAF=requestAnimationFrame(loop);
+    if(!stream || !v.videoWidth) return;
+    const sw=stage.clientWidth, sh=stage.clientHeight, va=v.videoWidth/v.videoHeight;
+    let dW=sw, dH=sw/va; if(dH>sh){ dH=sh; dW=sh*va; }
+    dW=Math.round(dW); dH=Math.round(dH);
+    if(cc.width!==dW||cc.height!==dH){ [cc,ov].forEach(c=>{c.width=dW;c.height=dH;c.style.width=dW+'px';c.style.height=dH+'px';}); }
+    // 依數位變焦擷取中央區域
+    let sx=0,sy=0,cw=v.videoWidth,ch=v.videoHeight;
+    if(!nativeZoom && digitalZoom>1){ cw=v.videoWidth/digitalZoom; ch=v.videoHeight/digitalZoom; sx=(v.videoWidth-cw)/2; sy=(v.videoHeight-ch)/2; }
+    cc.getContext('2d').drawImage(v, sx,sy,cw,ch, 0,0, dW,dH);
+    const now=performance.now();
+    if(cvReady && now-lastDetect>250){ lastDetect=now; liveQuad=fastDetect(cc); updateLock(liveQuad); }
+    drawLive(ov, liveQuad);
+  }
+  liveRAF=requestAnimationFrame(loop);
+}
+function stopLive(){ if(liveRAF) cancelAnimationFrame(liveRAF); liveRAF=null; liveQuad=null; const ov=$('liveOverlay'); if(ov) ov.getContext('2d').clearRect(0,0,ov.width,ov.height); }
+function updateLock(q){ const p=$('lockpill'); if(q){ p.className='lockpill on'; p.textContent='✓ 已框到投影片，可以拍'; } else { p.className='lockpill'; p.textContent='對準／拉近，讓綠框框住投影片'; } }
+function drawLive(ov,q){
+  const c=ov.getContext('2d'); c.clearRect(0,0,ov.width,ov.height); if(!q) return;
+  c.lineWidth=3; c.strokeStyle='#3ad29f'; c.fillStyle='rgba(58,210,159,.14)';
+  c.beginPath(); q.forEach((p,i)=>i?c.lineTo(p.x,p.y):c.moveTo(p.x,p.y)); c.closePath(); c.fill(); c.stroke();
+  q.forEach(p=>{ c.beginPath(); c.arc(p.x,p.y,7,0,7); c.fillStyle='#3ad29f'; c.fill(); });
+}
+// 即時用的輕量偵測（單一 Canny，速度優先）；回傳 canvas 座標的 TL,TR,BR,BL
+function fastDetect(canvas){
+  const W=canvas.width,H=canvas.height, scale=Math.min(1,480/Math.max(W,H));
+  const sw=Math.round(W*scale), sh=Math.round(H*scale);
+  const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh;
+  tmp.getContext('2d').drawImage(canvas,0,0,sw,sh);
+  let src=cv.imread(tmp), gray=new cv.Mat(), m=new cv.Mat();
+  cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); cv.GaussianBlur(gray,gray,new cv.Size(5,5),0);
+  cv.Canny(gray,m,50,150); let k=cv.Mat.ones(5,5,cv.CV_8U); cv.dilate(m,m,k);
+  let cs=new cv.MatVector(), hi=new cv.Mat(); cv.findContours(m,cs,hi,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+  const area0=sw*sh, tol=0.02*Math.max(sw,sh), corners=[{x:0,y:0},{x:sw,y:0},{x:sw,y:sh},{x:0,y:sh}];
+  const nearFull=pts=>corners.every(c=>pts.some(p=>Math.hypot(p.x-c.x,p.y-c.y)<tol));
+  let best=null,bestA=area0*0.10;
+  for(let i=0;i<cs.size();i++){ const c=cs.get(i); const peri=cv.arcLength(c,true);
+    const ap=new cv.Mat(); cv.approxPolyDP(c,ap,0.02*peri,true);
+    if(ap.rows===4&&cv.isContourConvex(ap)){ const a=Math.abs(cv.contourArea(ap));
+      const pts=[]; for(let j=0;j<4;j++) pts.push({x:ap.data32S[j*2],y:ap.data32S[j*2+1]});
+      if(a>bestA&&a<area0*0.985&&!nearFull(pts)){ bestA=a; best=pts.map(p=>({x:p.x/scale,y:p.y/scale})); } }
+    ap.delete(); c.delete(); }
+  src.delete();gray.delete();m.delete();k.delete();cs.delete();hi.delete();
+  return best?orderCorners(best):null;
+}
 
 /* 變焦：優先用硬體變焦(畫質好)，不支援則用數位變焦(裁切放大) */
 function setupZoom(){
   const zi=$('zoom'); digitalZoom=1; nativeZoom=false;
-  $('video').style.transform='scale(1)';
   let caps={}; try{ caps=vTrack.getCapabilities?vTrack.getCapabilities():{}; }catch(e){}
   if(caps && caps.zoom){
     nativeZoom=true;
@@ -200,7 +261,7 @@ function applyZoom(z){
   z=Math.max(parseFloat($('zoom').min), Math.min(parseFloat($('zoom').max), z));
   $('zoom').value=z; $('zoomval').textContent=z.toFixed(1)+'×'; setZoomActiveBtn(z);
   if(nativeZoom){ try{ vTrack.applyConstraints({advanced:[{zoom:z}]}); }catch(e){} }
-  else{ digitalZoom=z; $('video').style.transform='scale('+z+')'; }
+  else{ digitalZoom=z; }   // 數位變焦由即時預覽的 canvas 擷取處理
 }
 function setZoomActiveBtn(z){ document.querySelectorAll('.zbtn').forEach(b=>b.classList.toggle('on', Math.abs(parseFloat(b.dataset.z)-z)<0.05)); }
 $('zoom').oninput=e=>applyZoom(parseFloat(e.target.value));
