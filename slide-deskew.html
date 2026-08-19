@@ -29,17 +29,21 @@
   @keyframes sp{ to{ transform:rotate(360deg); } }
   .stage{ position:relative; width:100%; background:#000; border-radius:14px; overflow:hidden; }
   video, .stage canvas, .stage img{ display:block; width:100%; height:auto; }
-  #video{ transform-origin:center center; }
-  .zoombar{ position:absolute; left:0; right:0; bottom:104px; display:flex; align-items:center; gap:8px; padding:0 14px; }
+  /* 相機改為全螢幕覆蓋，控制列永遠可見 */
+  #camera{ position:fixed; inset:0; z-index:40; background:#000; display:flex; flex-direction:column; }
+  #camStage{ position:relative; flex:1; min-height:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  #video{ max-width:100%; max-height:100%; width:auto; height:auto; transform-origin:center center; }
+  .cambottom{ position:absolute; left:0; right:0; bottom:0; z-index:2; display:flex; flex-direction:column; align-items:center; gap:12px;
+    padding:12px 14px calc(14px + env(safe-area-inset-bottom)); background:linear-gradient(to top, rgba(0,0,0,.6), rgba(0,0,0,0)); }
+  .zoombar{ display:flex; align-items:center; gap:8px; width:100%; max-width:520px; }
   .zoombar input[type=range]{ flex:1; height:26px; accent-color:#fff; }
   .zbtn{ background:rgba(0,0,0,.55); color:#fff; border:none; border-radius:16px; padding:6px 9px; font-size:13px; cursor:pointer; }
   .zbtn.on{ background:#fff; color:#000; font-weight:700; }
   #zoomval{ background:rgba(0,0,0,.55); color:#fff; border-radius:12px; padding:5px 7px; font-size:12px; min-width:42px; text-align:center; }
-  #shutter{ position:absolute; left:50%; bottom:16px; transform:translateX(-50%);
-    width:72px; height:72px; border-radius:50%; background:#fff; border:5px solid rgba(255,255,255,.4);
-    cursor:pointer; }
-  #shutter:active{ transform:translateX(-50%) scale(.92); }
-  .camtop{ position:absolute; top:10px; right:10px; display:flex; gap:8px; }
+  .camhint{ color:#fff; font-size:13px; text-align:center; opacity:.9; margin:0; text-shadow:0 1px 3px rgba(0,0,0,.7); }
+  #shutter{ width:72px; height:72px; border-radius:50%; background:#fff; border:5px solid rgba(255,255,255,.4); cursor:pointer; }
+  #shutter:active{ transform:scale(.92); }
+  .camtop{ position:absolute; top:calc(10px + env(safe-area-inset-top)); right:calc(10px + env(safe-area-inset-right)); z-index:2; display:flex; gap:8px; }
   .chip{ background:rgba(0,0,0,.55); color:#fff; border:none; border-radius:20px; padding:8px 12px;
     font-size:14px; cursor:pointer; }
   #overlay{ position:absolute; inset:0; touch-action:none; }
@@ -72,12 +76,15 @@
 
   <!-- 相機 -->
   <div id="camera" class="hidden">
-    <div class="stage" id="camStage">
+    <div id="camStage">
       <video id="video" playsinline muted></video>
-      <div class="camtop">
-        <button class="chip" id="btnSwitch">切換鏡頭</button>
-        <button class="chip" id="btnCamClose">取消</button>
-      </div>
+    </div>
+    <div class="camtop">
+      <button class="chip" id="btnSwitch">切換鏡頭</button>
+      <button class="chip" id="btnCamClose">取消</button>
+    </div>
+    <div class="cambottom">
+      <p class="camhint">拉近讓投影片填滿大半畫面，偵測才會準 · 手機可橫拿</p>
       <div class="zoombar">
         <button class="zbtn" data-z="1">1×</button>
         <button class="zbtn" data-z="2">2×</button>
@@ -87,7 +94,6 @@
       </div>
       <div id="shutter"></div>
     </div>
-    <p class="tip center" style="margin-top:12px">用滑桿或雙指拉近，讓投影片盡量放大填滿畫面，再按白色圓鈕。手機可橫拿。</p>
   </div>
 
   <!-- 結果 -->
@@ -116,7 +122,7 @@
 
   <!-- 手動微調 -->
   <div id="editor" class="hidden">
-    <div class="tip">拖動四個圓點對準投影片的四個角，完成後按「套用」。</div>
+    <div class="tip" id="editTip">拖動四個圓點對準投影片的四個角，完成後按「套用」。</div>
     <div class="stage">
       <canvas id="editCanvas"></canvas>
       <canvas id="overlay"></canvas>
@@ -134,7 +140,7 @@ let cvReady=false, stream=null, facing='environment';
 let vTrack=null, nativeZoom=false, digitalZoom=1;   // 變焦狀態
 let srcImg=new Image();               // 目前載入的原圖
 let detectedQuad=null;                 // 偵測到的四角（原圖座標）TL,TR,BR,BL
-let handles=null, dragIdx=-1;          // 手動微調用
+let handles=null, dragIdx=-1, editorReturn='home';   // 手動微調用
 const $=id=>document.getElementById(id);
 const show=id=>['home','camera','result','editor'].forEach(s=>$(s).classList.toggle('hidden', s!==id));
 
@@ -225,10 +231,15 @@ $('shutter').onclick=()=>{
 /* ---------- 自動偵測 + 拉正 ---------- */
 function autoProcess(){
   detectedQuad=detectQuad(srcImg);
-  const warped = warp(srcImg, detectedQuad || fallbackQuad(srcImg), currentAspect());
-  drawTo($('outCanvas'), warped); warped.delete && warped.delete();
-  $('statusBox').className = detectedQuad ? 'status ok' : 'status warn';
-  $('statusBox').textContent = detectedQuad ? '已自動偵測並拉正 ✓' : '沒把握自動抓到四角，已用整張圖；可手動微調。';
+  if(!detectedQuad){                       // 自動失敗 → 直接進微調，並提示
+    $('editTip').textContent='自動偵測沒抓到投影片。請拖四個角對準後按「套用」；或按「取消」重拍、拉更近一點讓投影片填滿畫面。';
+    editorReturn='home';
+    openEditor();
+    return;
+  }
+  const warped=warp(srcImg, detectedQuad, currentAspect());
+  drawTo($('outCanvas'), warped); warped.delete();
+  $('statusBox').className='status ok'; $('statusBox').textContent='已自動偵測並拉正 ✓';
   show('result');
 }
 
@@ -237,7 +248,7 @@ function fallbackQuad(img){
   return [{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}];
 }
 
-// 回傳 TL,TR,BR,BL（原圖座標）或 null
+// 回傳 TL,TR,BR,BL（原圖座標）或 null。多策略偵測：Canny×2 + 自適應 + Otsu + 亮度門檻
 function detectQuad(img){
   const W=img.naturalWidth||img.width, H=img.naturalHeight||img.height;
   const scale=Math.min(1, 900/Math.max(W,H));   // 縮小加速
@@ -245,37 +256,55 @@ function detectQuad(img){
   const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh;
   tmp.getContext('2d').drawImage(img,0,0,sw,sh);
 
-  let src=cv.imread(tmp), gray=new cv.Mat(), edg=new cv.Mat();
+  let src=cv.imread(tmp), gray=new cv.Mat(), g=new cv.Mat();
   cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(gray,gray,new cv.Size(5,5),0);
-  cv.Canny(gray,edg,50,150);
-  let k=cv.Mat.ones(5,5,cv.CV_8U);
-  cv.dilate(edg,edg,k);
-  let contours=new cv.MatVector(), hi=new cv.Mat();
-  cv.findContours(edg,contours,hi,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+  cv.GaussianBlur(gray,g,new cv.Size(5,5),0);
 
   const area0=sw*sh;
   const imgCorners=[{x:0,y:0},{x:sw,y:0},{x:sw,y:sh},{x:0,y:sh}];
   const tol=0.02*Math.max(sw,sh);
   const nearFull=pts=> imgCorners.every(c=> pts.some(p=>Math.hypot(p.x-c.x,p.y-c.y)<tol));
-  let best=null, bestArea=area0*0.15;           // 至少占 15%
-  for(let i=0;i<contours.size();i++){
-    const c=contours.get(i);
-    const peri=cv.arcLength(c,true);
-    const ap=new cv.Mat();
-    cv.approxPolyDP(c,ap,0.02*peri,true);
-    if(ap.rows===4 && cv.isContourConvex(ap)){
-      const area=Math.abs(cv.contourArea(ap));
-      const pts=[]; for(let j=0;j<4;j++) pts.push({x:ap.data32S[j*2], y:ap.data32S[j*2+1]});
-      // 排除幾乎等於整張畫面的外框（拍攝時的相片邊界／截圖白邊）
-      if(area>bestArea && area<area0*0.98 && !nearFull(pts)){
-        bestArea=area;
-        best=pts.map(p=>({x:p.x/scale, y:p.y/scale}));
+  let best=null, bestArea=area0*0.10;           // 至少占 10%
+
+  function harvest(edges){
+    let e2=new cv.Mat(), k=cv.Mat.ones(5,5,cv.CV_8U);
+    cv.dilate(edges,e2,k);
+    let contours=new cv.MatVector(), hi=new cv.Mat();
+    cv.findContours(e2,contours,hi,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+    for(let i=0;i<contours.size();i++){
+      const c=contours.get(i); const peri=cv.arcLength(c,true);
+      for(let e=0;e<2;e++){
+        const ap=new cv.Mat(); cv.approxPolyDP(c,ap,(e?0.04:0.02)*peri,true);
+        if(ap.rows===4 && cv.isContourConvex(ap)){
+          const area=Math.abs(cv.contourArea(ap));
+          const pts=[]; for(let j=0;j<4;j++) pts.push({x:ap.data32S[j*2], y:ap.data32S[j*2+1]});
+          if(area>bestArea && area<area0*0.985 && !nearFull(pts)){
+            bestArea=area; best=pts.map(p=>({x:p.x/scale, y:p.y/scale}));
+          }
+        }
+        ap.delete();
       }
+      c.delete();
     }
-    ap.delete(); c.delete();
+    contours.delete(); hi.delete(); e2.delete(); k.delete();
   }
-  src.delete(); gray.delete(); edg.delete(); k.delete(); contours.delete(); hi.delete();
+
+  let m=new cv.Mat();
+  cv.Canny(g,m,50,150); harvest(m);
+  cv.Canny(g,m,30,90);  harvest(m);
+  let ad=new cv.Mat();
+  cv.adaptiveThreshold(g,ad,255,cv.ADAPTIVE_THRESH_MEAN_C,cv.THRESH_BINARY,31,10);
+  cv.Canny(ad,m,50,150); harvest(m); ad.delete();
+  let ot=new cv.Mat();
+  cv.threshold(g,ot,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+  cv.Canny(ot,m,50,150); harvest(m); ot.delete();
+  // 亮度門檻：投影幕通常是最亮的大區塊
+  let bw=new cv.Mat(); const mean=cv.mean(g)[0];
+  cv.threshold(g,bw,mean+25,255,cv.THRESH_BINARY);
+  let kk=cv.Mat.ones(9,9,cv.CV_8U); cv.morphologyEx(bw,bw,cv.MORPH_CLOSE,kk);
+  cv.Canny(bw,m,50,150); harvest(m); bw.delete(); kk.delete();
+
+  src.delete(); gray.delete(); g.delete(); m.delete();
   return best ? orderCorners(best) : null;
 }
 
@@ -331,8 +360,8 @@ $('btnShare').onclick=async()=>{
 };
 
 /* ---------- 手動微調（備援） ---------- */
-$('btnManual').onclick=openEditor;
-$('btnEditCancel').onclick=()=>show('result');
+$('btnManual').onclick=()=>{ editorReturn='result'; $('editTip').textContent='拖動四個圓點對準投影片的四個角，完成後按「套用」。'; openEditor(); };
+$('btnEditCancel').onclick=()=>show(editorReturn);
 function openEditor(){
   const ec=$('editCanvas'), ov=$('overlay');
   const maxW=Math.min(760, document.querySelector('.wrap').clientWidth-32);
