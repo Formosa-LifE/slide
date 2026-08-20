@@ -51,7 +51,11 @@
   .camtop{ position:absolute; top:calc(10px + env(safe-area-inset-top)); right:calc(10px + env(safe-area-inset-right)); z-index:2; display:flex; gap:8px; }
   .chip{ background:rgba(0,0,0,.55); color:#fff; border:none; border-radius:20px; padding:8px 12px;
     font-size:14px; cursor:pointer; }
-  #overlay{ position:absolute; inset:0; touch-action:none; }
+  /* 編輯器（拖四角）版面 */
+  #editStage{ display:flex; align-items:center; justify-content:center; background:#000; padding:0; }
+  #editCanvas{ display:block; width:auto !important; height:auto !important; }
+  #overlay{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:auto !important; height:auto !important; touch-action:none; }
+  #loupe{ position:absolute; top:8px; right:8px; width:130px !important; height:130px !important; border-radius:50%; border:2px solid #3ad29f; display:none; z-index:5; background:#000; box-shadow:0 2px 8px rgba(0,0,0,.5); }
   .seg{ display:flex; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; margin:12px 0; }
   .seg button{ flex:1; padding:11px 6px; background:none; border:none; color:var(--sub); font-size:14px; cursor:pointer; }
   .seg button.on{ background:var(--accent); color:#fff; font-weight:600; }
@@ -128,15 +132,16 @@
     <p class="foot">在 iPhone 上也可以「長按上方圖片 → 拷貝」，再回備忘錄貼上。</p>
   </div>
 
-  <!-- 手動微調 -->
+  <!-- 手動微調（像備忘錄掃描：拖四個角） -->
   <div id="editor" class="hidden">
-    <div class="tip" id="editTip">拖動四個圓點對準投影片的四個角，完成後按「套用」。</div>
-    <div class="stage">
+    <div class="tip" id="editTip">拖動四個圓點對準投影片的四個角，完成後按「拉正」。</div>
+    <div class="stage" id="editStage">
       <canvas id="editCanvas"></canvas>
       <canvas id="overlay"></canvas>
+      <canvas id="loupe" width="130" height="130"></canvas>
     </div>
     <div class="row">
-      <button class="btn go" id="btnApply">✓ 套用</button>
+      <button class="btn go" id="btnApply">✓ 拉正</button>
       <button class="btn sec" id="btnEditCancel">取消</button>
     </div>
   </div>
@@ -299,16 +304,17 @@ $('shutter').onclick=()=>{
 
 /* ---------- 自動偵測 + 拉正 ---------- */
 function autoProcess(){
+  // 先自動偵測並直接拉正顯示結果；若沒抓到才進微調
   detectedQuad=detectQuad(srcImg);
-  if(!detectedQuad){                       // 自動失敗 → 直接進微調，並提示
-    $('editTip').textContent='自動偵測沒抓到投影片。請拖四個角對準後按「套用」；或按「取消」重拍、拉更近一點讓投影片填滿畫面。';
+  if(!detectedQuad){
     editorReturn='home';
+    $('editTip').textContent='沒自動抓到投影片。請拖四個角對準後按「拉正」；或按「取消」重拍、拉近一點。';
     openEditor();
     return;
   }
   const warped=warp(srcImg, detectedQuad, currentAspect());
   drawTo($('outCanvas'), warped); warped.delete();
-  $('statusBox').className='status ok'; $('statusBox').textContent='已自動偵測並拉正 ✓';
+  $('statusBox').className='status ok'; $('statusBox').textContent='已自動偵測並拉正 ✓　偵測不準可下方微調';
   show('result');
 }
 
@@ -469,14 +475,17 @@ $('btnShare').onclick=async()=>{
 };
 
 /* ---------- 手動微調（備援） ---------- */
-$('btnManual').onclick=()=>{ editorReturn='result'; $('editTip').textContent='拖動四個圓點對準投影片的四個角，完成後按「套用」。'; openEditor(); };
+$('btnManual').onclick=()=>{ editorReturn='result'; $('editTip').textContent='拖四個角對準投影片（可把上緣往上拉，避免裁掉深色標題），完成後按「拉正」。'; openEditor(); };
 $('btnEditCancel').onclick=()=>show(editorReturn);
 function openEditor(){
   const ec=$('editCanvas'), ov=$('overlay');
-  const maxW=Math.min(760, document.querySelector('.wrap').clientWidth-32);
   const W=srcImg.naturalWidth||srcImg.width, H=srcImg.naturalHeight||srcImg.height;
-  const s=Math.min(1, maxW/W); const dw=Math.round(W*s), dh=Math.round(H*s);
-  ec.width=dw; ec.height=dh; ov.width=dw; ov.height=dh; ov.style.width=dw+'px'; ov.style.height=dh+'px';
+  const availW=Math.min(760, document.querySelector('.wrap').clientWidth-32);
+  const availH=Math.max(240, window.innerHeight-210);      // 預留 tip 與按鈕
+  const s=Math.min(availW/W, availH/H, 1);
+  const dw=Math.round(W*s), dh=Math.round(H*s);
+  ec.width=dw; ec.height=dh; ov.width=dw; ov.height=dh;
+  ec.style.width=dw+'px'; ec.style.height=dh+'px'; ov.style.width=dw+'px'; ov.style.height=dh+'px';
   ec.getContext('2d').drawImage(srcImg,0,0,dw,dh);
   ec._s=s;
   const q=detectedQuad||insetQuad(W,H);
@@ -484,6 +493,19 @@ function openEditor(){
   drawOverlay();
   show('editor');
 }
+function showLoupe(px,py){
+  const lp=$('loupe'), ov=$('overlay'), s=$('editCanvas')._s;
+  const ix=px/s, iy=py/s, L=lp.width, Z=3, ss=L/Z;
+  const c=lp.getContext('2d'); c.clearRect(0,0,L,L);
+  c.save(); c.beginPath(); c.arc(L/2,L/2,L/2-1,0,7); c.clip();
+  c.drawImage(srcImg, ix-ss/2, iy-ss/2, ss, ss, 0,0, L,L); c.restore();
+  c.strokeStyle='#3ad29f'; c.lineWidth=1.5;
+  c.beginPath(); c.moveTo(L/2-12,L/2); c.lineTo(L/2+12,L/2); c.moveTo(L/2,L/2-12); c.lineTo(L/2,L/2+12); c.stroke();
+  const topRight = px>ov.width*0.6 && py<ov.height*0.35;   // 手指在右上時放大鏡移到左上
+  lp.style.left = topRight?'8px':'auto'; lp.style.right = topRight?'auto':'8px';
+  lp.style.display='block';
+}
+function hideLoupe(){ $('loupe').style.display='none'; }
 function insetQuad(W,H){ const mx=W*0.12,my=H*0.12; return [{x:mx,y:my},{x:W-mx,y:my},{x:W-mx,y:H-my},{x:mx,y:H-my}]; }
 function drawOverlay(){
   const ov=$('overlay'), c=ov.getContext('2d'); c.clearRect(0,0,ov.width,ov.height);
@@ -495,15 +517,16 @@ function drawOverlay(){
 const ov=$('overlay');
 ov.addEventListener('pointerdown',e=>{
   const r=ov.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
-  let best=28,bi=-1; handles.forEach((p,i)=>{ const d=Math.hypot(p.x-x,p.y-y); if(d<best){best=d;bi=i;} });
-  dragIdx=bi; if(bi>=0) ov.setPointerCapture(e.pointerId);
+  let best=34,bi=-1; handles.forEach((p,i)=>{ const d=Math.hypot(p.x-x,p.y-y); if(d<best){best=d;bi=i;} });
+  dragIdx=bi; if(bi>=0){ ov.setPointerCapture(e.pointerId); showLoupe(handles[bi].x,handles[bi].y); }
 });
 ov.addEventListener('pointermove',e=>{
   if(dragIdx<0) return; const r=ov.getBoundingClientRect();
   handles[dragIdx]={ x:Math.max(0,Math.min(ov.width,e.clientX-r.left)), y:Math.max(0,Math.min(ov.height,e.clientY-r.top)) };
-  drawOverlay();
+  drawOverlay(); showLoupe(handles[dragIdx].x,handles[dragIdx].y);
 });
-ov.addEventListener('pointerup',()=>dragIdx=-1);
+ov.addEventListener('pointerup',()=>{ dragIdx=-1; hideLoupe(); });
+ov.addEventListener('pointercancel',()=>{ dragIdx=-1; hideLoupe(); });
 $('btnApply').onclick=()=>{
   const s=$('editCanvas')._s;
   detectedQuad=orderCorners(handles.map(p=>({x:p.x/s,y:p.y/s})));
