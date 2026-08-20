@@ -96,7 +96,7 @@
       <button class="chip" id="btnCamClose">取消</button>
     </div>
     <div class="cambottom">
-      <p class="camhint">拉近讓投影片填滿大半畫面，偵測才會準 · 手機可橫拿</p>
+      <p class="camhint">拉近讓螢幕填滿大半畫面、四角都入鏡 · 沒綠框也能拍，拍完可手動微調</p>
       <div class="zoombar">
         <button class="zbtn" data-z="1">1×</button>
         <button class="zbtn" data-z="2">2×</button>
@@ -219,7 +219,7 @@ function startLive(){
   liveRAF=requestAnimationFrame(loop);
 }
 function stopLive(){ if(liveRAF) cancelAnimationFrame(liveRAF); liveRAF=null; liveQuad=null; const ov=$('liveOverlay'); if(ov) ov.getContext('2d').clearRect(0,0,ov.width,ov.height); }
-function updateLock(q){ const p=$('lockpill'); if(q){ p.className='lockpill on'; p.textContent='✓ 已框到投影片，可以拍'; } else { p.className='lockpill'; p.textContent='對準／拉近，讓綠框框住投影片'; } }
+function updateLock(q){ const p=$('lockpill'); if(q){ p.className='lockpill on'; p.textContent='✓ 已框到投影片，可以拍'; } else { p.className='lockpill'; p.textContent='沒框到也可以拍，拍完再手動微調'; } }
 function drawLive(ov,q){
   const c=ov.getContext('2d'); c.clearRect(0,0,ov.width,ov.height); if(!q) return;
   c.lineWidth=3; c.strokeStyle='#3ad29f'; c.fillStyle='rgba(58,210,159,.14)';
@@ -244,13 +244,15 @@ function fastDetect(canvas){
       const ap=new cv.Mat(); cv.approxPolyDP(c,ap,0.02*peri,true);
       if(ap.rows===4&&cv.isContourConvex(ap)){ const frac=Math.abs(cv.contourArea(ap))/area0;
         const pts=[]; for(let j=0;j<4;j++) pts.push({x:ap.data32S[j*2],y:ap.data32S[j*2+1]});
-        if(frac>0.10&&frac<0.90&&!nearFull(pts)) cands.push({frac,pts}); }
+        if(frac>0.10&&frac<0.97&&!nearFull(pts)) cands.push({frac,pts}); }
       ap.delete(); c.delete(); }
     cs.delete(); hi.delete(); e.delete();
   }
   cv.Canny(gray,m,50,150); harvest();
   let ad=new cv.Mat(); cv.adaptiveThreshold(gray,ad,255,cv.ADAPTIVE_THRESH_MEAN_C,cv.THRESH_BINARY,31,10);
   cv.Canny(ad,m,50,150); harvest(); ad.delete();
+  let ot=new cv.Mat(); cv.threshold(gray,ot,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+  cv.Canny(ot,m,50,150); harvest(); ot.delete();
   src.delete();gray.delete();m.delete();k.delete();
   let best=null,bestScore=0;
   for(const c of cands){ const sc=scoreQuad(c.frac,c.pts,cdata.g,cdata.s,sw,sh); if(sc>bestScore){bestScore=sc;best=c.pts;} }
@@ -355,7 +357,7 @@ function detectQuad(img){
           const frac=Math.abs(cv.contourArea(ap))/area0;
           const pts=[]; for(let j=0;j<4;j++) pts.push({x:ap.data32S[j*2], y:ap.data32S[j*2+1]});
           // 排除太小、幾乎整張畫面、以及外框
-          if(frac>0.10 && frac<0.90 && !nearFull(pts)) cands.push({frac, pts});
+          if(frac>0.10 && frac<0.97 && !nearFull(pts)) cands.push({frac, pts});
         }
         ap.delete();
       }
