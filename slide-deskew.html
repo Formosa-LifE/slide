@@ -121,15 +121,17 @@
       <button data-a="1.4142">A4</button>
     </div>
 
+    <button class="btn go" id="btnCopy">📋 複製圖片（直接貼到筆記）</button>
     <div class="row">
-      <button class="btn go" id="btnShare">📤 分享／存到備忘錄</button>
+      <button class="btn sec" id="btnShare">📤 分享</button>
+      <button class="btn" id="btnNext">📷 拍下一張</button>
     </div>
     <div class="row">
       <button class="btn sec" id="btnDownload">⬇︎ 下載 PNG</button>
-      <button class="btn sec" id="btnRetake">↻ 重拍</button>
+      <button class="btn sec" id="btnRetake">↻ 重新選擇</button>
     </div>
     <button class="btn sec" id="btnManual">偵測不準？手動微調四角</button>
-    <p class="foot">在 iPhone 上也可以「長按上方圖片 → 拷貝」，再回備忘錄貼上。</p>
+    <p class="foot">按「複製圖片」後，切到備忘錄長按 →「貼上」即可。若無法複製，改用「分享」或長按上方圖片。</p>
   </div>
 
   <!-- 手動微調（像備忘錄掃描：拖四個角） -->
@@ -318,6 +320,7 @@ function autoProcess(){
   drawTo($('outCanvas'), warped); warped.delete();
   $('statusBox').className='status ok'; $('statusBox').textContent='已自動偵測並拉正 ✓　偵測不準可下方微調';
   show('result');
+  copyResult().then(copiedOk).catch(()=>{});   // 拍完盡力自動複製
 }
 
 function fallbackQuad(img){
@@ -470,6 +473,18 @@ $('aspectSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
 
 /* ---------- 輸出 ---------- */
 $('btnRetake').onclick=()=>show('home');
+$('btnNext').onclick=()=>startCamera();   // 直接回到相機拍下一張
+function copyResult(){   // 回傳 Promise；iOS 相容寫法：ClipboardItem 直接吃 Promise<Blob>
+  if(!window.ClipboardItem || !navigator.clipboard) return Promise.reject();
+  const item=new ClipboardItem({ 'image/png': new Promise(res=>$('outCanvas').toBlob(b=>res(b),'image/png')) });
+  return navigator.clipboard.write([item]);
+}
+function copiedOk(){
+  const b=$('btnCopy'); b.textContent='✓ 已複製，去筆記貼上'; setTimeout(()=>b.textContent='📋 複製圖片（直接貼到筆記）',1800);
+  $('statusBox').className='status ok'; $('statusBox').textContent='已複製到剪貼簿 ✓　切到備忘錄貼上即可';
+}
+function copyFail(){ $('statusBox').className='status warn'; $('statusBox').textContent='此裝置無法自動複製，請按「複製圖片」或「分享」，或長按上方圖片 →「拷貝」。'; }
+$('btnCopy').onclick=()=>copyResult().then(copiedOk).catch(copyFail);
 $('btnDownload').onclick=()=>{ const a=document.createElement('a'); a.download='slide.png'; a.href=$('outCanvas').toDataURL('image/png'); a.click(); };
 $('btnShare').onclick=async()=>{
   $('outCanvas').toBlob(async blob=>{
@@ -542,6 +557,7 @@ $('btnApply').onclick=()=>{
   drawTo($('outCanvas'), w); w.delete();
   $('statusBox').className='status ok'; $('statusBox').textContent='已依你的四角拉正 ✓';
   show('result');
+  copyResult().then(copiedOk).catch(()=>{});
 };
 </script>
 </body>
