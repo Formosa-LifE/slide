@@ -25,7 +25,8 @@
   .seg button{ flex:1; padding:9px 6px; background:none; border:none; color:var(--sub); font-size:14px; cursor:pointer; }
   .seg button.on{ background:var(--accent); color:#fff; font-weight:600; }
   .grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin:12px 0; }
-  .item{ background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .item{ position:relative; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .item .done{ position:absolute; top:6px; left:6px; background:rgba(58,210,159,.96); color:#08251b; font-weight:700; font-size:12px; border-radius:12px; padding:3px 8px; }
   .item .thumb{ width:100%; aspect-ratio:4/3; object-fit:contain; background:#000; display:block; }
   .item .bar{ display:flex; gap:6px; padding:7px; }
   .item .bar button{ flex:1; padding:7px 4px; font-size:13px; border:none; border-radius:8px; background:#0e1216; color:var(--fg); border:1px solid var(--line); cursor:pointer; }
@@ -91,6 +92,7 @@
 
   <div id="actions" class="hidden">
     <button class="btn go" id="btnCloud">☁️ 存到雲端硬碟</button>
+    <button class="btn sec hidden" id="btnOpen">🔗 開啟雲端位置</button>
     <div class="row">
       <button class="btn sec" id="btnZip">⬇︎ 下載 ZIP</button>
       <button class="btn sec" id="btnPdf">⬇︎ 合併 PDF</button>
@@ -236,7 +238,7 @@ function processItem(it){
   it.auto = !!it.quad;
   warpToCanvas(it.img, it.quad||fullQuad(it.img), currentAspect(), it.canvas);
 }
-function reWarpAll(){ items.forEach(it=>warpToCanvas(it.img, it.quad||fullQuad(it.img), currentAspect(), it.canvas)); renderAll(); }
+function reWarpAll(){ items.forEach(it=>{ warpToCanvas(it.img, it.quad||fullQuad(it.img), currentAspect(), it.canvas); it.uploaded=false; it.link=null; }); renderAll(); }
 
 /* ===== 網格顯示 ===== */
 function renderAll(){
@@ -244,14 +246,18 @@ function renderAll(){
   items.forEach(it=>{
     const div=document.createElement('div'); div.className='item';
     const img=document.createElement('img'); img.className='thumb'; img.src=it.canvas.toDataURL('image/jpeg',0.8); div.appendChild(img);
-    if(!it.auto){ const f=document.createElement('div'); f.className='flag'; f.textContent='⚠ 沒自動偵測到，建議微調'; div.appendChild(f); }
+    if(it.uploaded){ const d=document.createElement('div'); d.className='done'; d.textContent='✓ 已存'; div.appendChild(d); }
+    if(!it.auto && !it.uploaded){ const f=document.createElement('div'); f.className='flag'; f.textContent='⚠ 沒自動偵測到，建議微調'; div.appendChild(f); }
     const bar=document.createElement('div'); bar.className='bar';
     const b1=document.createElement('button'); b1.textContent='✏️ 微調'; b1.onclick=()=>openEditorFor(it.id);
     const b2=document.createElement('button'); b2.textContent='🗑 刪除'; b2.onclick=()=>{ items=items.filter(x=>x.id!==it.id); renderAll(); };
-    bar.appendChild(b1); bar.appendChild(b2); div.appendChild(bar); grid.appendChild(div);
+    bar.appendChild(b1);
+    if(it.link){ const b3=document.createElement('button'); b3.textContent='🔗 開啟'; b3.onclick=()=>window.open(it.link,'_blank'); bar.appendChild(b3); }
+    bar.appendChild(b2); div.appendChild(bar); grid.appendChild(div);
   });
   $('count').textContent = items.length ? ('共 '+items.length+' 張') : '';
   $('actions').classList.toggle('hidden', items.length===0);
+  updateCloudBtn();
 }
 
 /* ===== 手動微調 modal ===== */
@@ -289,6 +295,7 @@ ovl.addEventListener('pointercancel',()=>{ dragIdx=-1; $('loupe').style.display=
 $('btnEditCancel').onclick=()=>$('editor').classList.add('hidden');
 $('btnApply').onclick=()=>{ const s=$('editCanvas')._s;
   curEdit.quad=orderCorners(handles.map(p=>({x:p.x/s,y:p.y/s}))); curEdit.auto=true;
+  curEdit.uploaded=false; curEdit.link=null;   // 內容改了，可再存
   warpToCanvas(curEdit.img, curEdit.quad, currentAspect(), curEdit.canvas);
   $('editor').classList.add('hidden'); renderAll();
 };
@@ -313,20 +320,41 @@ function dl(blob,name){ const a=document.createElement('a'); a.href=URL.createOb
 $('btnClear').onclick=()=>{ if(confirm('清空全部？')){ items=[]; renderAll(); } };
 
 /* ===== 輸出：存到雲端硬碟（POST 到 Apps Script）===== */
+let uploading=false;
+function updateCloudBtn(){
+  const b=$('btnCloud'); if(!items.length) return;
+  if(uploading){ b.disabled=true; b.textContent='☁️ 上傳中…請稍候，勿重複按'; return; }
+  const pend=items.filter(it=>!it.uploaded).length;
+  if(pend===0){ b.disabled=true; b.textContent='✓ 全部已存到雲端（'+items.length+' 張）'; }
+  else { b.disabled=false; b.textContent = pend===items.length ? '☁️ 存到雲端硬碟' : ('☁️ 存 '+pend+' 張新的到雲端'); }
+}
+function openTargetUrl(){ const id=$('targetId').value.trim(), mode=curSeg('modeSeg','m');
+  return mode==='doc' ? 'https://docs.google.com/document/d/'+id+'/edit' : 'https://drive.google.com/drive/folders/'+id; }
+$('btnOpen').onclick=()=>window.open(openTargetUrl(),'_blank');
 $('btnCloud').onclick=async()=>{
-  if(!items.length) return;
+  if(uploading) return;
+  const pend=items.filter(it=>!it.uploaded);
+  if(!pend.length){ return; }
   const url=$('url').value.trim(), token=$('token').value.trim(), targetId=$('targetId').value.trim(), mode=curSeg('modeSeg','m');
   if(!url||!token||!targetId){ status('請先在「雲端與輸出設定」填入網址、密語與目標 ID。','warn'); $('cfg').open=true; return; }
   saveCfg();
-  status('上傳中…（'+items.length+' 張）');
-  const images=[];
-  for(const it of items){ const durl=it.canvas.toDataURL('image/jpeg',0.9); images.push({ name:it.name.replace(/\.\w+$/,'')+'.jpg', type:'image/jpeg', b64:durl.split(',')[1] }); }
+  uploading=true; updateCloudBtn();
+  status('⏳ 上傳中…（'+pend.length+' 張），請稍候，勿重複按。');
+  $('statusBox').scrollIntoView({behavior:'smooth', block:'center'});
+  const images=pend.map(it=>{ const durl=it.canvas.toDataURL('image/jpeg',0.9); return { name:it.name.replace(/\.\w+$/,'')+'.jpg', type:'image/jpeg', b64:durl.split(',')[1] }; });
   try{
     const res=await fetch(url,{ method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({token,mode,targetId,images}) });
     const out=await res.json();
-    if(out.ok){ status('完成 ✓ 已存 '+out.saved+' 張到你的雲端硬碟。','ok'); }
-    else{ status('後端回報錯誤：'+(out.error||'未知'),'err'); }
-  }catch(err){ status('上傳失敗：'+err+'（請確認網址、部署權限為「任何人」、以及密語是否一致）','err'); }
+    if(out.ok){
+      pend.forEach((it,i)=>{ it.uploaded=true; if(mode==='folder' && out.links && out.links[i]) it.link=out.links[i]; });
+      $('btnOpen').classList.remove('hidden');
+      const where = mode==='doc' ? '插入 Google 文件' : '存進 Drive 資料夾';
+      uploading=false; renderAll();
+      status('✅ 完成！已'+where+' '+out.saved+' 張。可按上方「🔗 開啟雲端位置」查看。','ok');
+      $('statusBox').scrollIntoView({behavior:'smooth', block:'center'});
+      alert('✅ 已完成！\n共'+where+' '+out.saved+' 張投影片。\n每張縮圖已標「✓ 已存」，可按「🔗 開啟雲端位置」查看。');
+    } else { uploading=false; status('後端回報錯誤：'+(out.error||'未知'),'err'); updateCloudBtn(); }
+  }catch(err){ uploading=false; status('上傳失敗：'+err+'（請確認網址、部署權限為「任何人」、以及密語是否一致）','err'); updateCloudBtn(); }
 };
 
 loadCfg();
